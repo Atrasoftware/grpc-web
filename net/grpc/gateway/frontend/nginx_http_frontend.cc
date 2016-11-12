@@ -141,7 +141,7 @@ void NginxHttpFrontend::Start() {
   ngx_int_t rc = ngx_http_read_client_request_body(http_request_,
                                                    continue_read_request_body);
   if (rc >= NGX_HTTP_BAD_REQUEST) {
-    DEBUG("ngx_http_read_client_request_body failed, rc = %ld.", rc);
+    DEBUG("ngx_http_read_client_request_body failed, rc = %d.", rc);
     SendErrorToClient(grpc::Status(grpc::StatusCode::INTERNAL,
                                    "Failed to read request body."));
     return;
@@ -174,7 +174,7 @@ void NginxHttpFrontend::ContinueReadRequestBody() {
 
   while (true) {
     ngx_int_t rc = ngx_http_read_unbuffered_request_body(http_request_);
-    DEBUG("ngx_http_read_unbuffered_request_body = %li", rc);
+    DEBUG("ngx_http_read_unbuffered_request_body = %i", rc);
     if (http_request_->request_body->bufs == nullptr) {
       return;
     }
@@ -216,7 +216,7 @@ void NginxHttpFrontend::SendResponseMessageToClient(Response *response) {
   if (response->message() != nullptr) {
     std::vector<Slice> transcoded_message;
     ByteBuffer buffer(response->message()->data(), response->message()->size());
-    DEBUG("Sends response message, size: %li", buffer.Length());
+    DEBUG("Sends response message, size: %i", buffer.Length());
     encoder_->Encode(&buffer, &transcoded_message);
     if (!transcoded_message.empty()) {
       ngx_chain_t *output = ngx_alloc_chain_link(http_request_->pool);
@@ -491,7 +491,7 @@ void NginxHttpFrontend::SendResponseHeadersToClient(Response *response) {
   }
   ngx_int_t rc = ngx_http_send_header(http_request_);
   if (rc != NGX_OK) {
-    ERROR("Failed to send HTTP response headers via nginx, rc = %ld.", rc);
+    ERROR("Failed to send HTTP response headers via nginx, rc = %d.", rc);
   }
 }
 
