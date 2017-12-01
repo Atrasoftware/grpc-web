@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "google/protobuf/stubs/common.h"
 #include "net/grpc/gateway/backend/grpc_backend.h"
 #include "net/grpc/gateway/codec/b64_proto_decoder.h"
 #include "net/grpc/gateway/codec/b64_proto_encoder.h"
@@ -13,6 +14,8 @@
 #include "net/grpc/gateway/codec/grpc_encoder.h"
 #include "net/grpc/gateway/codec/grpc_web_decoder.h"
 #include "net/grpc/gateway/codec/grpc_web_encoder.h"
+#include "net/grpc/gateway/codec/grpc_web_text_decoder.h"
+#include "net/grpc/gateway/codec/grpc_web_text_encoder.h"
 #include "net/grpc/gateway/codec/json_decoder.h"
 #include "net/grpc/gateway/codec/json_encoder.h"
 #include "net/grpc/gateway/codec/proto_decoder.h"
@@ -62,6 +65,18 @@ bool IsResponseB64(ngx_http_request_t* http_request) {
   return false;
 }
 
+bool IsResponseGrpcWebText(ngx_http_request_t* http_request) {
+  string_ref value =
+      GetHTTPHeader(&http_request->headers_in.headers.part, kAccept);
+  if ((kContentTypeGrpcWebTextLength == value.size() &&
+       strncasecmp(kContentTypeGrpcWebText, value.data(), value.size()) == 0) ||
+      (kContentTypeGrpcWebTextProtoLength == value.size() &&
+       strncasecmp(kContentTypeGrpcWebTextProto, value.data(), value.size()) ==
+           0)) {
+    return true;
+  }
+  return false;
+}
 }  // namespace
 
 Runtime::Runtime() {
@@ -79,17 +94,20 @@ void Runtime::Shutdown() {
     grpc_channel_destroy(entry.second);
   }
   grpc_backend_channels_.clear();
+  grpc_shutdown();
+  google::protobuf::ShutdownProtobufLibrary();
 }
 
 std::shared_ptr<Frontend> Runtime::CreateNginxFrontend(
     ngx_http_request_t* http_request, const string& backend_address,
     const string& backend_host, const string& backend_method,
-    const string& channel_reuse) {
+    const ngx_flag_t& channel_reuse,
+    const ngx_msec_t& client_liveness_detection_interval) {
   std::unique_ptr<GrpcBackend> backend(new GrpcBackend());
   backend->set_address(backend_address);
   backend->set_host(backend_host);
   backend->set_method(backend_method);
-  if (channel_reuse == "on") {
+  if (channel_reuse) {
     backend->set_use_shared_channel_pool(true);
   }
   NginxHttpFrontend* frontend = new NginxHttpFrontend(std::move(backend));
@@ -100,6 +118,8 @@ std::shared_ptr<Frontend> Runtime::CreateNginxFrontend(
   Protocol response_protocol = DetectResponseProtocol(http_request);
   frontend->set_response_protocol(response_protocol);
   frontend->set_encoder(CreateEncoder(response_protocol, http_request));
+  frontend->set_client_liveness_detection_interval(
+      client_liveness_detection_interval);
 
   return std::shared_ptr<Frontend>(frontend);
 }
@@ -111,6 +131,8 @@ std::unique_ptr<Encoder> Runtime::CreateEncoder(
       return std::unique_ptr<Encoder>(new GrpcEncoder());
     case GRPC_WEB:
       return std::unique_ptr<Encoder>(new GrpcWebEncoder());
+    case GRPC_WEB_TEXT:
+      return std::unique_ptr<Encoder>(new GrpcWebTextEncoder());
     case JSON_STREAM_BODY:
       return std::unique_ptr<Encoder>(new JsonEncoder());
     case PROTO_STREAM_BODY:
@@ -146,6 +168,8 @@ std::unique_ptr<Decoder> Runtime::CreateDecoder(
     }
     case GRPC_WEB:
       return std::unique_ptr<Decoder>(new GrpcWebDecoder());
+    case GRPC_WEB_TEXT:
+      return std::unique_ptr<Decoder>(new GrpcWebTextDecoder());
     case JSON_STREAM_BODY:
       return std::unique_ptr<Decoder>(new JsonDecoder());
     case PROTO_STREAM_BODY:
@@ -203,10 +227,21 @@ Protocol Runtime::DetectRequestProtocol(ngx_http_request_t* http_request) {
           0) {
     return GRPC;
   }
-  if (content_type_length == kContentTypeGrpcWebLength &&
-      strncasecmp(kContentTypeGrpcWeb, content_type,
-                  kContentTypeGrpcWebLength) == 0) {
+  if ((content_type_length == kContentTypeGrpcWebLength &&
+       strncasecmp(kContentTypeGrpcWeb, content_type,
+                   kContentTypeGrpcWebLength) == 0) ||
+      (content_type_length == kContentTypeGrpcWebProtoLength &&
+       strncasecmp(kContentTypeGrpcWebProto, content_type,
+                   kContentTypeGrpcWebProtoLength) == 0)) {
     return GRPC_WEB;
+  }
+  if ((content_type_length == kContentTypeGrpcWebTextLength &&
+       strncasecmp(kContentTypeGrpcWebText, content_type,
+                   kContentTypeGrpcWebTextLength) == 0) ||
+      (content_type_length == kContentTypeGrpcWebTextProtoLength &&
+       strncasecmp(kContentTypeGrpcWebTextProto, content_type,
+                   kContentTypeGrpcWebTextProtoLength) == 0)) {
+    return GRPC_WEB_TEXT;
   }
   return UNKNOWN;
 }
@@ -247,9 +282,21 @@ Protocol Runtime::DetectResponseProtocol(ngx_http_request_t* http_request) {
           0) {
     return GRPC;
   }
-  if (content_type_length == kContentTypeGrpcWebLength &&
-      strncasecmp(kContentTypeGrpcWeb, content_type,
-                  kContentTypeGrpcWebLength) == 0) {
+  if ((content_type_length == kContentTypeGrpcWebLength &&
+       strncasecmp(kContentTypeGrpcWeb, content_type,
+                   kContentTypeGrpcWebLength) == 0) ||
+      (content_type_length == kContentTypeGrpcWebProtoLength &&
+       strncasecmp(kContentTypeGrpcWebProto, content_type,
+                   kContentTypeGrpcWebProtoLength) == 0) ||
+      (content_type_length == kContentTypeGrpcWebTextLength &&
+       strncasecmp(kContentTypeGrpcWebText, content_type,
+                   kContentTypeGrpcWebTextLength) == 0) ||
+      (content_type_length == kContentTypeGrpcWebTextProtoLength &&
+       strncasecmp(kContentTypeGrpcWebTextProto, content_type,
+                   kContentTypeGrpcWebTextProtoLength) == 0)) {
+    if (IsResponseGrpcWebText(http_request)) {
+      return GRPC_WEB_TEXT;
+    }
     return GRPC_WEB;
   }
   return UNKNOWN;

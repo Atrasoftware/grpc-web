@@ -13,12 +13,13 @@ namespace grpc {
 namespace gateway {
 
 GrpcEventQueue::GrpcEventQueue()
-    : queue_(grpc_completion_queue_create(nullptr)), thread_id_(0) {}
+    : queue_(grpc_completion_queue_create_for_next(nullptr)), thread_id_(0) {}
 
 GrpcEventQueue::~GrpcEventQueue() {}
 
 void GrpcEventQueue::Start() {
   gpr_thd_options thread_options = gpr_thd_options_default();
+  gpr_thd_options_set_joinable(&thread_options);
   int ret = gpr_thd_new(&thread_id_, ExecuteEventLoop, this, &thread_options);
   INFO("GRPC event thread started: %d", ret);
 }
